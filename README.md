@@ -76,9 +76,8 @@ erişilebilirlik (a11y) ve test tarafında Jest + RTL (unit/integration) ile Cyp
 
 <br />
 
-<!-- Pacman yerine, kendi ürettiğin otomatik güncellenen animasyon kart -->
 <div align="center">
-  <img src="https://raw.githubusercontent.com/umutdemr/umutdemr/output/umutdemr-contrib-card.gif" height="180" alt="Umut Can Demir - Contribution Card" />
+<img src="https://raw.githubusercontent.com/umutdemr/umutdemr/output/umutdemr-contrib-card.gif?v=2" height="180" alt="Umut Can Demir - Contribution Card" />
 </div>
 
 ---
