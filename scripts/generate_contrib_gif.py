@@ -2,7 +2,7 @@ import os
 import math
 import datetime as dt
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 USER = os.environ.get("GITHUB_USERNAME", "umutdemr")
@@ -34,21 +34,32 @@ def get_created_at() -> dt.date:
     created_at = data["user"]["createdAt"]
     return dt.datetime.fromisoformat(created_at.replace("Z", "+00:00")).date()
 
-def get_total_contrib(from_date: dt.date, to_date: dt.date) -> int:
+def get_bucket(from_date: dt.date, to_date: dt.date) -> dict:
     q = """
     query($login:String!, $from:DateTime!, $to:DateTime!){
       user(login:$login){
         contributionsCollection(from:$from, to:$to){
           contributionCalendar{ totalContributions }
+          totalCommitContributions
+          totalIssueContributions
+          totalPullRequestContributions
+          totalPullRequestReviewContributions
         }
       }
     }
     """
     data = gql(q, {"login": USER, "from": iso(from_date), "to": iso(to_date)})
-    return int(data["user"]["contributionsCollection"]["contributionCalendar"]["totalContributions"])
+    cc = data["user"]["contributionsCollection"]
+    return {
+        "total": int(cc["contributionCalendar"]["totalContributions"]),
+        "commits": int(cc["totalCommitContributions"]),
+        "issues": int(cc["totalIssueContributions"]),
+        "prs": int(cc["totalPullRequestContributions"]),
+        "reviews": int(cc["totalPullRequestReviewContributions"]),
+    }
 
-def sum_all_time_contrib(created: dt.date, today: dt.date) -> int:
-    total = 0
+def sum_all_time(created: dt.date, today: dt.date) -> dict:
+    total = {"total": 0, "commits": 0, "issues": 0, "prs": 0, "reviews": 0}
     y = created.year
     while y <= today.year:
         start = dt.date(y, 1, 1)
@@ -57,112 +68,209 @@ def sum_all_time_contrib(created: dt.date, today: dt.date) -> int:
             start = created
         if y == today.year:
             end = today + dt.timedelta(days=1)
-        total += get_total_contrib(start, end)
+        b = get_bucket(start, end)
+        for k in total:
+            total[k] += b[k]
         y += 1
     return total
 
 def load_font(size: int, bold: bool = False):
-    # Ubuntu runner'da genelde mevcut
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    path = candidates[1] if bold else candidates[0]
+    # GitHub ubuntu runner'da genelde var
+    regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    boldp = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
-        return ImageFont.truetype(path, size=size)
+        return ImageFont.truetype(boldp if bold else regular, size=size)
     except Exception:
         return ImageFont.load_default()
 
-def ease_out_cubic(t: float) -> float:
-    return 1 - (1 - t) ** 3
+def ease_in_out(t: float) -> float:
+    # smoothstep-ish
+    return t * t * (3 - 2 * t)
 
-def rounded_rect(draw: ImageDraw.ImageDraw, xy, r, fill):
-    x0, y0, x1, y1 = xy
-    draw.rounded_rectangle([x0, y0, x1, y1], radius=r, fill=fill)
+def lerp(a, b, t):
+    return int(a + (b - a) * t)
 
-def make_frame(w: int, h: int, value: int, total: int, date_range: str, progress: float) -> Image.Image:
-    img = Image.new("RGB", (w, h), (10, 14, 24))  # dark bg
-    d = ImageDraw.Draw(img)
+def lerp_rgb(c1, c2, t):
+    return (lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t))
 
-    # card
+def make_vertical_gradient(w, h, top, bottom):
+    img = Image.new("RGB", (w, h), top)
+    px = img.load()
+    for y in range(h):
+        t = y / max(1, h - 1)
+        c = lerp_rgb(top, bottom, t)
+        for x in range(w):
+            px[x, y] = c
+    return img
+
+def rounded(draw, xy, r, fill):
+    draw.rounded_rectangle(xy, radius=r, fill=fill)
+
+def format_k(n: int) -> str:
+    # 1250 -> 1.2k
+    if n >= 1000:
+        v = n / 1000.0
+        if v < 10:
+            return f"{v:.1f}k"
+        return f"{v:.0f}k"
+    return str(n)
+
+def make_frame(w, h, name, role, tagline, totals: dict, val_total: int, p: float, shimmer_x: float) -> Image.Image:
+    # gradient bg
+    bg = make_vertical_gradient(w, h, top=(8, 12, 24), bottom=(22, 10, 38))
+
+    # add soft diagonal glow
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse([-200, -120, 520, 520], fill=(255, 77, 141, 80))
+    gd.ellipse([w-520, h-420, w+200, h+200], fill=(96, 165, 250, 70))
+    glow = glow.filter(ImageFilter.GaussianBlur(18))
+    bg = Image.alpha_composite(bg.convert("RGBA"), glow).convert("RGB")
+
+    d = ImageDraw.Draw(bg)
+
     pad = 18
     card = (pad, pad, w - pad, h - pad)
-    rounded_rect(d, card, r=18, fill=(15, 23, 42))
+    rounded(d, card, r=18, fill=(14, 20, 36))
 
-    # subtle glow bar
-    glow_w = int((w - 2 * pad) * (0.35 + 0.65 * progress))
-    d.rectangle([pad, pad, pad + glow_w, pad + 3], fill=(255, 77, 141))
+    # top gradient strip
+    strip_h = 5
+    strip = Image.new("RGB", (w - 2 * pad, strip_h), (0, 0, 0))
+    spx = strip.load()
+    for x in range(strip.width):
+        t = x / max(1, strip.width - 1)
+        c = lerp_rgb((255, 77, 141), (96, 165, 250), t)
+        for y in range(strip_h):
+            spx[x, y] = c
+    bg.paste(strip, (pad, pad))
 
-    # text
+    # shimmer highlight
+    shimmer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shimmer)
+    # thin angled rectangle
+    x0 = int(shimmer_x) - 120
+    sd.polygon([(x0, pad+8), (x0+70, pad+8), (x0+190, h-pad-8), (x0+120, h-pad-8)],
+               fill=(255, 255, 255, 24))
+    shimmer = shimmer.filter(ImageFilter.GaussianBlur(10))
+    bg = Image.alpha_composite(bg.convert("RGBA"), shimmer).convert("RGB")
+    d = ImageDraw.Draw(bg)
+
+    # fonts
     f_name = load_font(26, bold=True)
     f_role = load_font(16, bold=False)
     f_tag = load_font(14, bold=False)
-    f_label = load_font(14, bold=False)
-    f_num = load_font(44, bold=True)
-    f_small = load_font(13, bold=False)
+    f_big = load_font(46, bold=True)
+    f_lbl = load_font(14, bold=False)
+    f_metric = load_font(14, bold=True)
 
     x = pad + 18
-    y = pad + 18
+    y = pad + 16
 
-    d.text((x, y), DISPLAY_NAME, font=f_name, fill=(230, 237, 243))
-    d.text((x, y + 36), ROLE_LINE, font=f_role, fill=(255, 77, 141))
-    d.text((x, y + 60), TAGLINE, font=f_tag, fill=(201, 209, 217))
+    # left texts
+    d.text((x, y), name, font=f_name, fill=(230, 237, 243))
+    d.text((x, y + 36), role, font=f_role, fill=(255, 77, 141))
+    d.text((x, y + 60), tagline, font=f_tag, fill=(201, 209, 217))
 
-    # right side number
-    num_text = f"{value:,}"
-    label = "Total Contributions"
-    tw, th = d.textbbox((0, 0), num_text, font=f_num)[2:]
-    lx, ly = w - pad - 18 - tw, y + 8
-    d.text((lx, ly), num_text, font=f_num, fill=(255, 77, 141))
-    lbw, lbh = d.textbbox((0, 0), label, font=f_label)[2:]
-    d.text((w - pad - 18 - lbw, ly + 54), label, font=f_label, fill=(201, 209, 217))
-    d.text((w - pad - 18 - d.textbbox((0, 0), date_range, font=f_small)[2],
-            ly + 76),
-           date_range,
-           font=f_small,
-           fill=(201, 209, 217))
+    # right big total (animated)
+    total_text = f"{val_total:,}"
+    tw = d.textbbox((0, 0), total_text, font=f_big)[2]
+    tx = w - pad - 18 - tw
+    ty = y + 2
 
-    # progress bar
-    bar_x0, bar_y0 = x, h - pad - 26
-    bar_x1, bar_y1 = w - pad - 18, h - pad - 16
+    # gradient-ish big number (fake by drawing twice)
+    d.text((tx, ty), total_text, font=f_big, fill=(255, 77, 141))
+    d.text((tx+1, ty+1), total_text, font=f_big, fill=(96, 165, 250))
+
+    label = "All-time Contributions"
+    lbw = d.textbbox((0, 0), label, font=f_lbl)[2]
+    d.text((w - pad - 18 - lbw, ty + 56), label, font=f_lbl, fill=(201, 209, 217))
+
+    # metrics row (commits/prs/issues/reviews)
+    metrics = [
+        ("Commits", totals["commits"]),
+        ("PRs", totals["prs"]),
+        ("Issues", totals["issues"]),
+        ("Reviews", totals["reviews"]),
+    ]
+
+    row_y = h - pad - 44
+    # separator line
+    d.line([(x, row_y - 10), (w - pad - 18, row_y - 10)], fill=(34, 46, 68), width=1)
+
+    # draw chips
+    cx = x
+    for (k, v) in metrics:
+        text = f"{k}: {format_k(v)}"
+        bb = d.textbbox((0, 0), text, font=f_metric)
+        chip_w = (bb[2] - bb[0]) + 18
+        chip_h = 26
+        rounded(d, (cx, row_y, cx + chip_w, row_y + chip_h), r=10, fill=(9, 12, 20))
+        # tiny gradient dot
+        d.ellipse([cx + 8, row_y + 10, cx + 14, row_y + 16], fill=(255, 77, 141))
+        d.text((cx + 18, row_y + 5), text, font=f_metric, fill=(201, 209, 217))
+        cx += chip_w + 10
+
+    # subtle bottom progress (purely aesthetic)
+    bar_x0, bar_y0 = x, h - pad - 16
+    bar_x1, bar_y1 = w - pad - 18, h - pad - 10
     d.rounded_rectangle([bar_x0, bar_y0, bar_x1, bar_y1], radius=6, fill=(9, 12, 20))
-    fill_w = int((bar_x1 - bar_x0) * progress)
-    d.rounded_rectangle([bar_x0, bar_y0, bar_x0 + fill_w, bar_y1], radius=6, fill=(255, 77, 141))
+    fill_w = int((bar_x1 - bar_x0) * p)
+    # bar gradient
+    for i in range(max(1, fill_w)):
+        t = i / max(1, fill_w - 1)
+        c = lerp_rgb((255, 77, 141), (96, 165, 250), t)
+        d.line([(bar_x0 + i, bar_y0), (bar_x0 + i, bar_y1)], fill=c, width=1)
 
-    return img
+    return bg
 
 def main():
     os.makedirs("dist", exist_ok=True)
 
     created = get_created_at()
     today = dt.date.today()
-    total = sum_all_time_contrib(created, today)
+    totals = sum_all_time(created, today)
 
-    date_range = f"{created.isoformat()} → {today.isoformat()}"
-
-    # GIF frames: count up
+    # animation settings (slower + smoother)
+    n_frames = 110            # daha fazla frame
+    duration_ms = 42          # frame başına süre (toplam ~4.6s)
     frames = []
-    n_frames = 56
+
     for i in range(n_frames):
         t = i / (n_frames - 1)
-        p = ease_out_cubic(t)
-        val = int(round(total * p))
-        frames.append(make_frame(900, 180, val, total, date_range, p))
+        p = ease_in_out(t)
+        # extra slow-start feel
+        p2 = p ** 1.15
+        val_total = int(round(totals["total"] * p2))
+        shimmer_x = (t * 1.25 - 0.15) * 900  # shimmer sweep
+        frames.append(
+            make_frame(
+                w=900,
+                h=220,
+                name=DISPLAY_NAME,
+                role=ROLE_LINE,
+                tagline=TAGLINE,
+                totals=totals,
+                val_total=val_total,
+                p=p,
+                shimmer_x=shimmer_x,
+            )
+        )
 
-    out = "dist/umutdemr-contrib-card.gif"
+    out_gif = "dist/umutdemr-contrib-card.gif"
     frames[0].save(
-        out,
+        out_gif,
         save_all=True,
         append_images=frames[1:],
-        duration=28,
+        duration=duration_ms,
         loop=0,
         optimize=True,
+        disposal=2,
     )
 
-    # Also export a static PNG
+    # static png final frame
     frames[-1].save("dist/umutdemr-contrib-card.png", optimize=True)
 
-    print(f"Generated: {out} (total={total})")
+    print(f"Generated: {out_gif} totals={totals}")
 
 if __name__ == "__main__":
     main()
