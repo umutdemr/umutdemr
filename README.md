@@ -19,7 +19,7 @@
 Frontend odaklı yazılım geliştiricisiyim. React + TypeScript ile component-driven, ölçeklenebilir arayüzler geliştiriyorum.
 Redux Toolkit/Zustand ve React Query ile state/server-state yönetimi, REST/GraphQL entegrasyonları; Zod ile runtime schema validation
 ve type-safe form/API veri doğrulama süreçleri üzerinde çalışıyorum. Performans (code-splitting, lazy loading, memoization, bundle analizi),
-erişilebilirlik (a11y) ve test tarafında Jest + RTL (unit/integration) ile Cypress/Playwright (e2e) ve CI/CD entegrasyonu deneyimim var.
+erişilebilirlik (a11y) ve test tarafında Cypress/Playwright (e2e) ve CI/CD entegrasyonu deneyimim var.
 </p>
 
 ---
